@@ -4,10 +4,12 @@ import os
 import boto3
 
 sqs = boto3.client("sqs")
+state_table = boto3.resource("dynamodb").Table("user-state")
 QUEUE_URL = os.environ["QUEUE_URL"]
 
 SUPPORTED_LOCATION = "manhattan"
 SUPPORTED_CUISINES = {"chinese", "italian", "japanese", "mexican", "indian", "thai"}
+SAME_AS_LAST_SLOT = "SameAsLast"
 
 
 # Returns a slot's value (Lex's interpreted value, falling back to what the user typed), or None if the slot is empty.
@@ -65,6 +67,14 @@ def elicit_slot(intent, slot_name, message):
     }
 
 
+# Returns the user's last search (saved by LF2) if it was for the same location and cuisine, otherwise None.
+def get_last_search(user_id, location, cuisine):
+    item = state_table.get_item(Key={"userId": user_id}).get("Item")
+    if item and item["location"].lower() == location.lower() and item["cuisine"].lower() == cuisine.lower():
+        return item
+    return None
+
+
 # Handles DiningSuggestionsIntent: validates the location during the conversation, then once every slot is filled,
 # pushes the request to the SQS queue (Q1) and confirms to the user that suggestions will be emailed.
 def handle_dining(event):
@@ -88,10 +98,27 @@ def handle_dining(event):
             "Try Chinese, Italian, Japanese, Mexican, Indian, or Thai.",
         )
 
+    same_as_last = get_slot(slots, SAME_AS_LAST_SLOT)
+    if location and cuisine and same_as_last in (None, "Yes"):
+        last_search = get_last_search(event["sessionId"], location, cuisine)
+        if last_search and same_as_last is None:
+            return elicit_slot(
+                intent,
+                SAME_AS_LAST_SLOT,
+                f"Last time you searched for {cuisine} food in {location}. "
+                "Would you like the same recommendations as last time?",
+            )
+        if last_search:
+            suggestions = " ".join(
+                f"{i}. {restaurant}." for i, restaurant in enumerate(last_search["recommendations"], 1)
+            )
+            return close(intent, f"Here are your suggestions from last time: {suggestions} Enjoy your meal!")
+
     if event["invocationSource"] == "DialogCodeHook":
         return delegate(intent)
 
     request = {
+        "userId": event["sessionId"],
         "location": location,
         "cuisine": cuisine,
         "diningTime": get_slot(slots, "DiningTime"),

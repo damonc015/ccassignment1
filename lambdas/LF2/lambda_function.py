@@ -8,6 +8,7 @@ import boto3
 sqs = boto3.client("sqs")
 ses = boto3.client("ses")
 table = boto3.resource("dynamodb").Table("yelp-restaurants")
+state_table = boto3.resource("dynamodb").Table("user-state")
 
 QUEUE_URL = os.environ["QUEUE_URL"]
 SENDER_EMAIL = os.environ["SENDER_EMAIL"]
@@ -50,15 +51,31 @@ def get_restaurants(restaurant_ids):
     return restaurants
 
 
+def describe(restaurant):
+    return f"{restaurant['name']}, located at {restaurant['address']}"
+
+
 def format_email(request, restaurants):
     lines = [
         f"Hello! Here are my {request['cuisine'].title()} restaurant suggestions for "
         f"{request['numberOfPeople']} people, for {request['diningTime']}:"
     ]
     for i, restaurant in enumerate(restaurants, 1):
-        lines.append(f"{i}. {restaurant['name']}, located at {restaurant['address']}")
+        lines.append(f"{i}. {describe(restaurant)}")
     lines.append("Enjoy your meal!")
     return "\n".join(lines)
+
+
+# Remembers the user's last search and its suggestions so LF1 can offer them again next time.
+def save_last_search(request, restaurants):
+    if not request.get("userId"):
+        return
+    state_table.put_item(Item={
+        "userId": request["userId"],
+        "location": request["location"],
+        "cuisine": request["cuisine"],
+        "recommendations": [describe(restaurant) for restaurant in restaurants],
+    })
 
 
 # Queue worker: pulls a message from Q1, finds suggestions, emails them, then deletes the message.
@@ -81,6 +98,7 @@ def lambda_handler(event, context):
                 "Body": {"Text": {"Data": format_email(request, restaurants)}},
             },
         )
+        save_last_search(request, restaurants)
 
     sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=message["ReceiptHandle"])
     return {"processed": 1}
