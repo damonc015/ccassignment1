@@ -7,6 +7,7 @@ sqs = boto3.client("sqs")
 QUEUE_URL = os.environ["QUEUE_URL"]
 
 SUPPORTED_LOCATION = "manhattan"
+SUPPORTED_CUISINES = {"chinese", "italian", "japanese", "mexican", "indian", "thai"}
 
 
 # Returns a slot's value (Lex's interpreted value, falling back to what the user typed), or None if the slot is empty.
@@ -78,12 +79,21 @@ def handle_dining(event):
             f"Sorry, I can't fulfill requests for {location}. Please enter a valid location.",
         )
 
+    cuisine = get_slot(slots, "Cuisine")
+    if cuisine and cuisine.lower() not in SUPPORTED_CUISINES:
+        return elicit_slot(
+            intent,
+            "Cuisine",
+            f"Sorry, I don't have suggestions for {cuisine}. "
+            "Try Chinese, Italian, Japanese, Mexican, Indian, or Thai.",
+        )
+
     if event["invocationSource"] == "DialogCodeHook":
         return delegate(intent)
 
     request = {
         "location": location,
-        "cuisine": get_slot(slots, "Cuisine"),
+        "cuisine": cuisine,
         "diningTime": get_slot(slots, "DiningTime"),
         "numberOfPeople": get_slot(slots, "NumberOfPeople"),
         "email": get_slot(slots, "Email"),
